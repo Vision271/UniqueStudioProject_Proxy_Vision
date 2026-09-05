@@ -236,7 +236,6 @@ class ClientConnection:
             else:
                 pass
         elif self.state == ESTABLISHED_MUX:
-            length += 12
             if frame_type not in (SOCKS5_HANDSHAKE, TCP_STREAM):
                 raise ConnectionError(f"在 ESTABLISHED_MUX 状态下收到非 SOCKS5_HANDSHAKE 或 TCP_STREAM 帧: {frame_type}")
             else:
