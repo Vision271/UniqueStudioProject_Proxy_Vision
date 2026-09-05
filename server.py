@@ -472,21 +472,21 @@ class TargetConnection:
         self.read_clear()
         return 1   
 
-    def read(self) -> None:
-        if self.size_to_read == 0:
-            print("read_buffer 为空的 TargetConnection 被认为可读")
-            return 
+    # def read(self) -> None:
+    #     if self.size_to_read == 0:
+    #         print("read_buffer 为空的 TargetConnection 被认为可读")
+    #         return 
 
-        if self.state == CONNECTING:
-            raise ConnectionError("在 CONNECTING 状态下收到数据")   
-        else:
-            data = memoryview(self.read_buffer)[self.read_offset:]
-            self.client_conn.write(TCP_STREAM, self.id, bytearray(data))
-            self.read_offset += len(data)
-            del data
-            self.read_clear()
+    #     if self.state == CONNECTING:
+    #         raise ConnectionError("在 CONNECTING 状态下收到数据")   
+    #     else:
+    #         data = memoryview(self.read_buffer)[self.read_offset:]
+    #         self.client_conn.write(TCP_STREAM, self.id, bytearray(data))
+    #         self.read_offset += len(data)
+    #         del data
+    #         self.read_clear()
 
-        return
+    #     return
 
     def write(self, data: bytes):
         if len(self.write_buffer) + len(data) > TargetConnection.buffer_size:
@@ -594,7 +594,7 @@ def main():
                     if conn.state == ESTABLISHED:
                         try:
                             conn.recv()
-                            conn.read()
+                            # conn.read()
                         except Exception as e:
                             print(f"Error reading from {conn.target_host}:{conn.target_port}: {e}")
                             conn.close()
