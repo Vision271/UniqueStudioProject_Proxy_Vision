@@ -77,9 +77,9 @@ class ListenerConnection:
 
 
 class ClientConnection:
-    clear_threshold = 1024 * 1024 * 4
-    buffer_size = 1024 * 1024 * 4 * 4
-    high_watermark = 1024 * 1024 * 4 * 3
+    clear_threshold = 1024 * 1024 * 16
+    buffer_size = 1024 * 1024 * 4 * 16
+    high_watermark = 1024 * 1024 * 4 * 12
     timeout = 60 * 10
 
     __slots__ = (
@@ -321,8 +321,7 @@ class TargetConnection:
         'target_host', 'target_port',
         'state',
         'id',
-        'read_buffer', 'write_buffer',
-        'read_offset', 'write_offset',
+        'write_buffer','write_offset',
         'client_conn',
         'last_active_time'
     )
@@ -334,15 +333,13 @@ class TargetConnection:
         self.sock.setblocking(False)
         self.state = CONNECTING
 
-        self.read_buffer = socks5_request
         self.write_buffer = bytearray()
-        self.read_offset = 0
         self.write_offset = 0
 
         self.target_host = None
         self.target_port = None
 
-        if not self.read_socks5_request():
+        if not self.read_socks5_request(socks5_request):
             self.close()
             print(f"读取 SOCKS5 请求失败,stream_id: {self.id}")
 
@@ -378,14 +375,6 @@ class TargetConnection:
         response = b"\x05\x00\x00\x03" + bytes([len(self.target_host)]) + self.target_host.encode() + struct.pack("!H", self.target_port)
         self.client_conn.write(SOCKS5_HANDSHAKE, self.id, bytearray(response))
         return True
-
-    def read_clear(self) -> None:
-        if self.read_offset == len(self.read_buffer):
-            self.read_buffer.clear()
-            self.read_offset = 0
-        elif self.read_offset > TargetConnection.clear_threshold:
-            self.read_buffer = self.read_buffer[self.read_offset:]
-            self.read_offset = 0
 
     def write_clear(self) -> None:
         if self.write_offset == len(self.write_buffer):
@@ -435,58 +424,36 @@ class TargetConnection:
     def size_to_write(self):
         return len(self.write_buffer) - self.write_offset
 
-    @property
-    def size_to_read(self):
-        return len(self.read_buffer) - self.read_offset
 
-    def read_socks5_request(self) -> bool:
-        if self.size_to_read < 4:
+    def read_socks5_request(self, data: bytearray) -> bool:
+        if len(data) < 4:
             return 0
 
-        view = memoryview(self.read_buffer)
-        ver, cmd, _, addr_type = struct.unpack_from("!BBBB", view, self.read_offset)
+        view = memoryview(data)
+        ver, cmd, _, addr_type = struct.unpack_from("!BBBB", view, 0)
 
         if ver != 5:
             raise ConnectionError(f"非 SOCKS5 协议: {ver}")
         if cmd != 1:
             raise ConnectionError(f"不支持的命令: {cmd}")
         if addr_type == 3:
-            if self.size_to_read < 5:
+            if len(data) < 5:
                 return 0
-            domain_length = view[self.read_offset + 4]
-            if self.size_to_read < 5 + domain_length + 2:
+            domain_length = view[4]
+            if len(data) < 5 + domain_length + 2:
                 return 0
         else:
             raise ConnectionError(f"不支持的地址类型: {addr_type}")
 
-        addr_bytes = view[self.read_offset + 5:self.read_offset + 5 + domain_length]
-        port_bytes = view[self.read_offset + 5 + domain_length:self.read_offset + 5 + domain_length + 2]
+        addr_bytes = view[5:5 + domain_length]
+        port_bytes = view[5 + domain_length:5 + domain_length + 2]
         self.target_host = addr_bytes.tobytes().decode()
         self.target_port = struct.unpack("!H", port_bytes)[0]
         del addr_bytes
         del port_bytes
         del view
 
-        self.read_offset += 5 + domain_length + 2
-
-        self.read_clear()
         return 1   
-
-    # def read(self) -> None:
-    #     if self.size_to_read == 0:
-    #         print("read_buffer 为空的 TargetConnection 被认为可读")
-    #         return 
-
-    #     if self.state == CONNECTING:
-    #         raise ConnectionError("在 CONNECTING 状态下收到数据")   
-    #     else:
-    #         data = memoryview(self.read_buffer)[self.read_offset:]
-    #         self.client_conn.write(TCP_STREAM, self.id, bytearray(data))
-    #         self.read_offset += len(data)
-    #         del data
-    #         self.read_clear()
-
-    #     return
 
     def write(self, data: bytes):
         if len(self.write_buffer) + len(data) > TargetConnection.buffer_size:
@@ -514,7 +481,6 @@ class TargetConnection:
         if self.sock in self.client_conn.Connection_by_socket:
             del self.client_conn.Connection_by_socket[self.sock]
         self.client_conn.TargetConnections.discard(self)
-        self.read_buffer.clear()
         self.write_buffer.clear()
 
 

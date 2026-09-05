@@ -89,9 +89,9 @@ class VPSConnection:
     #原则上应该发心跳包和重连
     #但断了的话UserConnection也会断
     #而且实现起来很复杂，懒了，就这样吧，基于人工重启算了
-    clear_threshold = 1024 * 1024 * 4
-    buffer_size = 1024 * 1024 * 4 * 4
-    high_watermark = 1024 * 1024 * 4 * 3
+    clear_threshold = 1024 * 1024 * 16
+    buffer_size = 1024 * 1024 * 4 * 16
+    high_watermark = 1024 * 1024 * 4 * 12
 
     __slots__ = (
         'sock', 
@@ -278,7 +278,8 @@ class VPSConnection:
     def dispatch_frame(self, frame_type: int, stream_id: int, payload: bytearray) -> None:
         user_conn = UserConnection_by_id.get(stream_id)
         if user_conn is None:
-            raise ConnectionError(f"收到未知 stream_id 的帧: {stream_id}")
+            print(f"收到未知 stream_id 的帧: {stream_id}")
+            return
         user_conn.write(payload)
 
     def read(self) -> None:
