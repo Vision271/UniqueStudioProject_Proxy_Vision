@@ -1,4 +1,5 @@
 import errno
+import logging
 import os
 import select
 import socket
@@ -14,6 +15,12 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes
 
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 LISTEN_HOST = "0.0.0.0"
 LISTEN_PORT = 443
@@ -72,8 +79,9 @@ class ListenerConnection:
     def close(self):
         try:
             self.sock.close()
-        except Exception:
-            pass
+            logger.info("监听连接已关闭")
+        except Exception as e:
+            logger.warning("关闭监听连接失败：error=%s", e, exc_info=True)
 
 
 class ClientConnection:
@@ -144,6 +152,7 @@ class ClientConnection:
         self.cipher = ChaCha20Poly1305(self.session_key)
 
         self.state = ESTABLISHED_MUX
+        logger.info("ClientConnection 握手已完成：addr=%s，进入 ESTABLISHED_MUX 状态", self.addr)
         return
 
     def encrypt_func(self, data: bytearray) -> bytearray:
@@ -259,7 +268,7 @@ class ClientConnection:
     def dispatch_frame(self, frame_type: int, stream_id: int, payload: bytearray) -> None:
         target_conn = self.TargetConnection_by_id.get(stream_id)
         if target_conn is None:
-            print(f"收到未知 stream_id 的帧: {stream_id}")
+            logger.warning("收到未知 stream_id 的帧：stream_id=%s", stream_id)
             return
         target_conn.write(payload)
 
@@ -275,7 +284,7 @@ class ClientConnection:
                 try:
                     TargetConnection(self, stream_id, payload)
                 except Exception as e:
-                    print(f"创建 TargetConnection 失败: {e}")
+                    logger.error("创建 TargetConnection 失败：error=%s", e, exc_info=True)
             elif frame_type == TCP_STREAM:
                 self.dispatch_frame(frame_type, stream_id, payload)
             elif frame_type == KEY_EXCHANGE:
@@ -304,8 +313,9 @@ class ClientConnection:
     def close(self) -> None:
         try:
             self.sock.close()
-        except Exception:
-            pass
+            logger.info("ClientConnection 已关闭：addr=%s", self.addr)
+        except Exception as e:
+            logger.warning("关闭 ClientConnection 失败：addr=%s，error=%s", self.addr, e, exc_info=True)
         ClientConnections.discard(self)
         self.read_buffer.clear()
         self.write_buffer.clear()
@@ -344,7 +354,7 @@ class TargetConnection:
 
         if not self.read_socks5_request(socks5_request):
             self.close()
-            print(f"读取 SOCKS5 请求失败,stream_id: {self.id}")
+            logger.warning("读取 SOCKS5 请求失败：stream_id=%s", self.id)
 
         self.client_conn.Connection_by_socket[self.sock] = self
         self.client_conn.TargetConnection_by_id[self.id] = self
@@ -358,10 +368,10 @@ class TargetConnection:
             if e.errno in (errno.EINPROGRESS, errno.EWOULDBLOCK):
                 pass
             else:
-                print(f"连接目标网站失败: {e}")
+                logger.error("连接 target 失败：error=%s", e, exc_info=True)
                 self.close()
         except Exception as e:
-            print(f"连接目标网站失败: {e}")
+            logger.error("连接 target 失败：error=%s", e, exc_info=True)
             self.close()
                 
 
@@ -378,6 +388,7 @@ class TargetConnection:
             raise OSError(err, f"连接目标网站失败: {err}")
 
         self.state = ESTABLISHED
+        logger.info("TargetConnection 已建立：stream_id=%s，target_host=%s，target_port=%s", self.id, self.target_host, self.target_port)
         response = b"\x05\x00\x00\x03" + bytes([len(self.target_host)]) + self.target_host.encode() + struct.pack("!H", self.target_port)
         self.client_conn.write(SOCKS5_HANDSHAKE, self.id, bytearray(response))
         return True
@@ -476,12 +487,13 @@ class TargetConnection:
                     response = b"\x05\x08\x00\x01\x00\x00\x00\x00\x00\x00"
                 self.client_conn.write(SOCKS5_HANDSHAKE, self.id, bytearray(response))
             except Exception as e:
-                print(f"Error writing SOCKS5 handshake(socks5 failed): {e}")
+                logger.error("发送 SOCKS5 握手响应失败：error=%s", e, exc_info=True)
 
         try:
             self.sock.close()
-        except Exception:
-            pass
+            logger.info("TargetConnection 已关闭：stream_id=%s", self.id)
+        except Exception as e:
+            logger.warning("关闭 TargetConnection 失败：stream_id=%s，error=%s", self.id, e, exc_info=True)
         if self.id in self.client_conn.TargetConnection_by_id:
             del self.client_conn.TargetConnection_by_id[self.id]
         if self.sock in self.client_conn.Connection_by_socket:
@@ -494,19 +506,19 @@ def main():
     listener = ListenerConnection()
     client = None
 
-    print(f"server listening on {LISTEN_HOST}:{LISTEN_PORT}")
+    logger.info("server 已开始监听：LISTEN_HOST=%s，LISTEN_PORT=%s", LISTEN_HOST, LISTEN_PORT)
 
     while True:
         try:
             client = listener.read()
             if client:
-                print(f"Accepted connection from {client.addr}")
+                logger.info("client 连接已建立：addr=%s", client.addr)
         except Exception as e:
-            print(f"Error accepting connection: {e}")
+            logger.error("接收 client 连接失败：error=%s", e, exc_info=True)
 
         for client in list(ClientConnections):
             if time.time() - client.last_active_time > ClientConnection.timeout:
-                print(f"Closing inactive client connection from {client.addr}")
+                logger.info("client 连接已因超时关闭：addr=%s", client.addr)
                 client.close()
                 continue
 
@@ -516,7 +528,7 @@ def main():
                 write_list.append(client.sock)
             for target_conn in list(client.TargetConnections):
                 if time.time() - target_conn.last_active_time > TargetConnection.timeout:
-                    print(f"Closing inactive target connection to {target_conn.target_host}:{target_conn.target_port}")
+                    logger.info("target_conn 已因超时关闭：target_host=%s，target_port=%s", target_conn.target_host, target_conn.target_port)
                     target_conn.close()
                     continue
                 if client.size_to_write < ClientConnection.high_watermark:
@@ -527,7 +539,7 @@ def main():
             try:
                 readable, writable, _ = select.select(read_list, write_list, [], 0)
             except (OSError, ValueError) as e:
-                print(f"select error: {e}")
+                logger.error("调用 select 失败：error=%s", e, exc_info=True)
                 client.close()
                 continue
 
@@ -540,20 +552,20 @@ def main():
                         try:
                             conn.check_connect()
                         except Exception as e:
-                            print(f"Error connecting to {conn.target_host}:{conn.target_port}: {e}")
+                            logger.error("连接 target 失败：target_host=%s，target_port=%s，error=%s", conn.target_host, conn.target_port, e, exc_info=True)
                             conn.close()
                             continue
                     if conn.state == ESTABLISHED:
                         try:
                             conn.send()
                         except Exception as e:
-                            print(f"Error writing to {conn.target_host}:{conn.target_port}: {e}")
+                            logger.error("向 target_conn 写入数据失败：target_host=%s，target_port=%s，error=%s", conn.target_host, conn.target_port, e, exc_info=True)
                             conn.close()
                 else:
                     try:
                         conn.send()
                     except Exception as e:
-                        print(f"Error writing to {conn.addr}: {e}")
+                        logger.error("向 client 写入数据失败：addr=%s，error=%s", conn.addr, e, exc_info=True)
                         conn.close()
 
             for sock in readable:
@@ -562,20 +574,20 @@ def main():
                     continue
                 if isinstance(conn, TargetConnection):
                     if conn.state == CONNECTING:
-                        print(f"TargetConnection to {conn.target_host}:{conn.target_port} is still connecting, impossible ,how did it become readable?")
+                        logger.warning("target_conn 仍处于 CONNECTING 状态却被判定为可读：target_host=%s，target_port=%s", conn.target_host, conn.target_port)
                     if conn.state == ESTABLISHED:
                         try:
                             conn.recv()
                             # conn.read()
                         except Exception as e:
-                            print(f"Error reading from {conn.target_host}:{conn.target_port}: {e}")
+                            logger.error("从 target_conn 读取数据失败：target_host=%s，target_port=%s，error=%s", conn.target_host, conn.target_port, e, exc_info=True)
                             conn.close()
                 else:
                     try:
                         conn.recv()
                         conn.read()
                     except Exception as e:
-                        print(f"Error reading from {conn.addr}: {e}")
+                        logger.error("从 client 读取数据失败：addr=%s，error=%s", conn.addr, e, exc_info=True)
                         conn.close()
             
 

@@ -1,4 +1,5 @@
 import errno
+import logging
 import os
 import socket
 import struct
@@ -14,6 +15,12 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes
 
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 VPS_HOST = "47.80.16.59"
 VPS_PORT = 443
@@ -75,11 +82,11 @@ class ListenerConnection:
         return UserConnection(conn, vps_conn)
 
     def close(self):
-        print("监听连接关闭")
         try:
             self.sock.close()
-        except Exception:
-            pass
+            logger.info("监听连接已关闭")
+        except Exception as e:
+            logger.warning("关闭监听连接失败：error=%s", e, exc_info=True)
         if self.sock in Connection_by_socket:
             del Connection_by_socket[self.sock]
 
@@ -145,9 +152,11 @@ class VPSConnection:
         
         err = self.sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
         if err != 0:
+            logger.error("连接 VPS 失败：error=%s", err)
             raise OSError(err, f"连接 VPS 失败: {err}")
 
         self.state = HANDSHAKING_TLS
+        logger.info("VPSConnection 的 TCP 连接已建立，开始密钥交换")
         self.write(KEY_EXCHANGE, 0, self.public_key_bytes)
         return True
 
@@ -168,6 +177,7 @@ class VPSConnection:
         self.cipher = ChaCha20Poly1305(self.session_key)
 
         self.state = ESTABLISHED_MUX
+        logger.info("VPSConnection 握手已完成，进入 ESTABLISHED_MUX 状态")
         return
 
     def encrypt_func(self, data: bytearray) -> bytearray:
@@ -278,7 +288,7 @@ class VPSConnection:
     def dispatch_frame(self, frame_type: int, stream_id: int, payload: bytearray) -> None:
         user_conn = UserConnection_by_id.get(stream_id)
         if user_conn is None:
-            print(f"收到未知 stream_id 的帧: {stream_id}")
+            logger.warning("收到未知 stream_id 的帧：stream_id=%s", stream_id)
             return
         user_conn.write(payload)
 
@@ -314,11 +324,11 @@ class VPSConnection:
         self.write_buffer.extend(frame)
 
     def close(self) -> None:
-        print("VPS 连接关闭")
         try:
             self.sock.close()
-        except Exception:
-            pass
+            logger.info("VPSConnection 已关闭")
+        except Exception as e:
+            logger.warning("关闭 VPSConnection 失败：error=%s", e, exc_info=True)
 
         for user_conn in list(UserConnections):
             user_conn.close()
@@ -478,7 +488,7 @@ class UserConnection:
 
     def read(self) -> None:
         if self.size_to_read == 0:
-            print("read_buffer 为空的 UserConnection 被认为可读")
+            logger.debug("UserConnection.read_buffer 为空，但被判定为可读")
             return 
 
         if self.state == HANDSHAKING_SOCKS5:
@@ -490,6 +500,7 @@ class UserConnection:
             if request is None:
                 return
             self.state = ESTABLISHED
+            logger.info("UserConnection 已完成 SOCKS5 请求：id=%s，进入 ESTABLISHED 状态", self.id)
             self.vps_conn.write(SOCKS5_HANDSHAKE, self.id, request)
         else:
             data = memoryview(self.read_buffer)[self.read_offset:]
@@ -508,8 +519,9 @@ class UserConnection:
     def close(self) -> None:
         try:
             self.sock.close()
-        except Exception:
-            pass
+            logger.info("UserConnection 已关闭：id=%s", self.id)
+        except Exception as e:
+            logger.warning("关闭 UserConnection 失败：id=%s，error=%s", self.id, e, exc_info=True)
         if self.id in UserConnection_by_id:
             del UserConnection_by_id[self.id]
         if self.sock in Connection_by_socket:
@@ -519,13 +531,14 @@ class UserConnection:
         self.write_buffer.clear()
 
     def timeout_close(self) -> None:
-        print(f"用户连接 {self.id} 超时关闭")
+        logger.info("UserConnection 已因超时关闭：id=%s", self.id)
         self.close()
 
 
 def main():
     listen_conn = ListenerConnection()
     vps_conn = VPSConnection()
+    logger.info("client 已开始监听：LISTEN_HOST=%s，LISTEN_PORT=%s", LISTEN_HOST, LISTEN_PORT)
 
     while True:
         if not vps_conn.check_connect():
@@ -552,7 +565,7 @@ def main():
         try:
             readable, writable, _ = select.select(read_list, write_list, [], 0)
         except (OSError, ValueError) as e:
-            print(f"select error: {e}")
+            logger.error("调用 select 失败：error=%s", e, exc_info=True)
             vps_conn.close()
             listen_conn.close()
             break
@@ -565,15 +578,15 @@ def main():
                 try:
                     user_conn = conn.read(vps_conn)
                     if user_conn is not None:
-                        print(f"新用户连接: {user_conn.id} 来自 {user_conn.sock.getpeername()}")
+                        logger.info("UserConnection 已建立：id=%s，peer=%s", user_conn.id, user_conn.sock.getpeername())
                 except Exception as e:
-                    print(f"监听连接错误: {e}")
+                    logger.error("处理监听连接失败：error=%s", e, exc_info=True)
             elif isinstance(conn, VPSConnection):
                 try:
                     conn.recv()
                     conn.read()
                 except Exception as e:
-                    print(f"VPS 连接错误: {e}")
+                    logger.error("处理 VPSConnection 失败：error=%s", e, exc_info=True)
                     conn.close()
                     return
                     break
@@ -582,7 +595,7 @@ def main():
                     conn.recv()
                     conn.read()
                 except Exception as e:
-                    print(f"用户连接 {conn.id} 错误: {e}")
+                    logger.error("处理 UserConnection 失败：id=%s，error=%s", conn.id, e, exc_info=True)
                     conn.close()
 
         for sock in writable:
@@ -592,7 +605,7 @@ def main():
             try:
                 conn.send()
             except Exception as e:
-                print(f"发送数据错误: {e}")
+                logger.error("发送数据失败：error=%s", e, exc_info=True)
                 conn.close()
 
 if __name__ == "__main__":
