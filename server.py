@@ -272,7 +272,10 @@ class ClientConnection:
             if frame_type == SOCKS5_HANDSHAKE:
                 if stream_id in self.TargetConnection_by_id:
                     raise ConnectionError(f"重复的 stream_id: {stream_id}")
-                TargetConnection(self, stream_id, payload)
+                try:
+                    TargetConnection(self, stream_id, payload)
+                except Exception as e:
+                    print(f"创建 TargetConnection 失败: {e}")
             elif frame_type == TCP_STREAM:
                 self.dispatch_frame(frame_type, stream_id, payload)
             elif frame_type == KEY_EXCHANGE:
@@ -352,11 +355,14 @@ class TargetConnection:
         try:
             self.sock.connect((self.target_host, self.target_port))
         except BlockingIOError as e:
-            if e.errno == errno.EINPROGRESS:
+            if e.errno in (errno.EINPROGRESS, errno.EWOULDBLOCK):
                 pass
             else:
                 print(f"连接目标网站失败: {e}")
                 self.close()
+        except Exception as e:
+            print(f"连接目标网站失败: {e}")
+            self.close()
                 
 
     def check_connect(self) -> bool:
