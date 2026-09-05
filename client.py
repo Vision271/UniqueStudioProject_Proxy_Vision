@@ -173,7 +173,7 @@ class VPSConnection:
     def encrypt_func(self, data: bytearray) -> bytearray:
         nonce = os.urandom(12)
         encrypted_data = self.cipher.encrypt(nonce, data, None)
-        return bytearray(encrypted_data)
+        return bytearray(nonce + encrypted_data)
 
     def decrypt_func(self, data: bytearray) -> bytearray:
         nonce = data[:12]
@@ -255,6 +255,7 @@ class VPSConnection:
             else:
                 pass
         elif self.state == ESTABLISHED_MUX:
+            length += 12
             if frame_type not in (SOCKS5_HANDSHAKE, TCP_STREAM):
                 raise ConnectionError(f"在 ESTABLISHED_MUX 状态下收到非 SOCKS5_HANDSHAKE 或 TCP_STREAM 帧: {frame_type}")
             else:
