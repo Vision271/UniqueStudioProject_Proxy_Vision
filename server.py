@@ -1,5 +1,6 @@
 import errno
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 import select
 import socket
@@ -16,11 +17,48 @@ from cryptography.hazmat.primitives import hashes
 
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-)
-logger = logging.getLogger(__name__)
+class _InfoLogFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.levelno < logging.WARNING
+
+
+def _create_logger() -> logging.Logger:
+    logger = logging.getLogger("proxy.server")
+    logger.setLevel(logging.DEBUG)
+    logger.propagate = False
+
+    if logger.handlers:
+        return logger
+
+    formatter = logging.Formatter(
+        "%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
+
+    info_handler = RotatingFileHandler(
+        "server-info.log",
+        maxBytes=10 * 1024 * 1024,
+        backupCount=3,
+        encoding="utf-8",
+    )
+    info_handler.setLevel(logging.DEBUG)
+    info_handler.addFilter(_InfoLogFilter())
+    info_handler.setFormatter(formatter)
+
+    error_handler = RotatingFileHandler(
+        "server-error.log",
+        maxBytes=10 * 1024 * 1024,
+        backupCount=3,
+        encoding="utf-8",
+    )
+    error_handler.setLevel(logging.WARNING)
+    error_handler.setFormatter(formatter)
+
+    logger.addHandler(info_handler)
+    logger.addHandler(error_handler)
+    return logger
+
+
+logger = _create_logger()
 
 LISTEN_HOST = "0.0.0.0"
 LISTEN_PORT = 443
