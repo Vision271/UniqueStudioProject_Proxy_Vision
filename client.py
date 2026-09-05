@@ -75,12 +75,14 @@ class ListenerConnection:
         return UserConnection(conn, vps_conn)
 
     def close(self):
+        print("监听连接关闭")
         try:
             self.sock.close()
         except Exception:
             pass
         if self.sock in Connection_by_socket:
             del Connection_by_socket[self.sock]
+
 
 class VPSConnection:
     #todo 似乎也需要超时管理
@@ -311,6 +313,7 @@ class VPSConnection:
         self.write_buffer.extend(frame)
 
     def close(self) -> None:
+        print("VPS 连接关闭")
         try:
             self.sock.close()
         except Exception:
@@ -357,7 +360,7 @@ class UserConnection:
         self.write_buffer = bytearray()
         self.write_offset = 0
 
-        last_active_time = time.time()
+        self.last_active_time = time.time()
 
     def read_clear(self) -> None:
         if self.read_offset == len(self.read_buffer):
@@ -533,7 +536,7 @@ def main():
     while True:
         read_list = [listen_conn.sock, vps_conn.sock]
         write_list = []
-        for user_conn in UserConnections:
+        for user_conn in list(UserConnections):
             if time.time() - user_conn.last_active_time > UserConnection.timeout:
                 user_conn.timeout_close()
                 continue
@@ -545,16 +548,25 @@ def main():
         if vps_conn.size_to_write > 0:
             write_list.append(vps_conn.sock)
 
-        readable, writable, _ = select.select(read_list, write_list, [], 0)
+        try:
+            readable, writable, _ = select.select(read_list, write_list, [], 0)
+        except (OSError, ValueError) as e:
+            print(f"select error: {e}")
+            vps_conn.close()
+            listen_conn.close()
+            break
 
         for sock in readable:
             conn = Connection_by_socket.get(sock)
             if conn is None:
                 continue
             if isinstance(conn, ListenerConnection):
-                user_conn = conn.read(vps_conn)
-                if user_conn is not None:
-                    print(f"新用户连接: {user_conn.id} 来自 {user_conn.sock.getpeername()}")
+                try:
+                    user_conn = conn.read(vps_conn)
+                    if user_conn is not None:
+                        print(f"新用户连接: {user_conn.id} 来自 {user_conn.sock.getpeername()}")
+                except Exception as e:
+                    print(f"监听连接错误: {e}")
             elif isinstance(conn, VPSConnection):
                 try:
                     conn.recv()
@@ -562,6 +574,7 @@ def main():
                 except Exception as e:
                     print(f"VPS 连接错误: {e}")
                     conn.close()
+                    return
                     break
             elif isinstance(conn, UserConnection):
                 try:
@@ -580,6 +593,9 @@ def main():
             except Exception as e:
                 print(f"发送数据错误: {e}")
                 conn.close()
+
+if __name__ == "__main__":
+    main()
 
 '''
 listener 有读端口，读新 user

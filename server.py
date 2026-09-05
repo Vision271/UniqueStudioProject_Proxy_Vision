@@ -259,7 +259,8 @@ class ClientConnection:
     def dispatch_frame(self, frame_type: int, stream_id: int, payload: bytearray) -> None:
         target_conn = self.TargetConnection_by_id.get(stream_id)
         if target_conn is None:
-            raise ConnectionError(f"收到未知 stream_id 的帧: {stream_id}")
+            print(f"收到未知 stream_id 的帧: {stream_id}")
+            return
         target_conn.write(payload)
 
     def read(self):
@@ -343,7 +344,7 @@ class TargetConnection:
 
         if not self.read_socks5_request():
             self.close()
-            raise ConnectionError("读取 SOCKS5 请求失败")
+            print(f"读取 SOCKS5 请求失败,stream_id: {self.id}")
 
         self.client_conn.Connection_by_socket[self.sock] = self
         self.client_conn.TargetConnection_by_id[self.id] = self
@@ -357,7 +358,9 @@ class TargetConnection:
             if e.errno == errno.EINPROGRESS:
                 pass
             else:
-                raise
+                print(f"连接目标网站失败: {e}")
+                self.close()
+                
 
     def check_connect(self) -> bool:
         if self.state != CONNECTING:
@@ -372,6 +375,8 @@ class TargetConnection:
             raise OSError(err, f"连接目标网站失败: {err}")
 
         self.state = ESTABLISHED
+        response = b"\x05\x00\x00\x03" + bytes([len(self.target_host)]) + self.target_host.encode() + struct.pack("!H", self.target_port)
+        self.client_conn.write(SOCKS5_HANDSHAKE, self.id, response)
         return True
 
     def read_clear(self) -> None:
@@ -460,6 +465,7 @@ class TargetConnection:
         self.target_port = struct.unpack("!H", port_bytes)[0]
         del addr_bytes
         del port_bytes
+        del view
 
         self.read_offset += 5 + domain_length + 2
 
@@ -472,10 +478,7 @@ class TargetConnection:
             return 
 
         if self.state == CONNECTING:
-            if  self.check_connect():
-                # todo 这里格式不对？应该用 bytearray 和 extend？
-                response = b"\x05\x00\x00\x03" + bytes([len(self.target_host)]) + self.target_host.encode() + struct.pack("!H", self.target_port)
-                self.client_conn.write(SOCKS5_HANDSHAKE, self.id, response)
+            raise ConnectionError("在 CONNECTING 状态下收到数据")   
         else:
             data = memoryview(self.read_buffer)[self.read_offset:]
             self.client_conn.write(TCP_STREAM, self.id, bytearray(data))
@@ -493,12 +496,15 @@ class TargetConnection:
     def close(self) -> None:
         if self.state == CONNECTING:
             # todo 这里格式不对？应该用 bytearray 和 extend？
-            if self.target_host is not None and self.target_port is not None:
-                response = b"\x05\x05\x00\x03" + bytes([len(self.target_host)]) + self.target_host.encode() + struct.pack("!H", self.target_port)
-            else:
-                response = b"\x05\x08\x00\x01\x00\x00\x00\x00\x00\x00"
-            self.client_conn.write(SOCKS5_HANDSHAKE, self.id, response)
-            
+            try:
+                if self.target_host is not None and self.target_port is not None:
+                    response = b"\x05\x05\x00\x03" + bytes([len(self.target_host)]) + self.target_host.encode() + struct.pack("!H", self.target_port)
+                else:
+                    response = b"\x05\x08\x00\x01\x00\x00\x00\x00\x00\x00"
+                self.client_conn.write(SOCKS5_HANDSHAKE, self.id, response)
+            except Exception as e:
+                print(f"Error writing SOCKS5 handshake(socks5 failed): {e}")
+
         try:
             self.sock.close()
         except Exception:
@@ -536,17 +542,39 @@ def main():
             write_list = []
             if client.size_to_write > 0:
                 write_list.append(client.sock)
-            for target_conn in client.TargetConnections:
+            for target_conn in list(client.TargetConnections):
                 if time.time() - target_conn.last_active_time > TargetConnection.timeout:
                     print(f"Closing inactive target connection to {target_conn.target_host}:{target_conn.target_port}")
                     target_conn.close()
                     continue
                 if client.size_to_write < ClientConnection.high_watermark:
                     read_list.append(target_conn.sock)
-                if target_conn.size_to_write > 0:
+                if target_conn.size_to_write > 0 or target_conn.state == CONNECTING:
                     write_list.append(target_conn.sock)
 
-            readable, writable, _ = select.select(read_list, write_list, [], 0)
+            try:
+                readable, writable, _ = select.select(read_list, write_list, [], 0)
+            except (OSError, ValueError) as e:
+                print(f"select error: {e}")
+                client.close()
+                continue
+
+            for sock in writable:
+                conn = client.Connection_by_socket.get(sock)
+                if conn is None:
+                    continue
+                if isinstance(conn, TargetConnection) and conn.state == CONNECTING:
+                    try:
+                        conn.check_connect()
+                    except Exception as e:
+                        print(f"Error connecting to {conn.target_host}:{conn.target_port}: {e}")
+                        conn.close()
+                        continue
+                try:
+                    conn.send()
+                except Exception as e:
+                    print(f"Error writing to {conn.addr if isinstance(conn, ClientConnection) else conn.target_host}:{conn.target_port}: {e}")
+                    conn.close()
 
             for sock in readable:
                 conn = client.Connection_by_socket.get(sock)
@@ -557,16 +585,6 @@ def main():
                     conn.read()
                 except Exception as e:
                     print(f"Error reading from {conn.addr if isinstance(conn, ClientConnection) else conn.target_host}:{conn.target_port}: {e}")
-                    conn.close()
-
-            for sock in writable:
-                conn = client.Connection_by_socket.get(sock)
-                if conn is None:
-                    continue
-                try:
-                    conn.send()
-                except Exception as e:
-                    print(f"Error writing to {conn.addr if isinstance(conn, ClientConnection) else conn.target_host}:{conn.target_port}: {e}")
                     conn.close()
             
 
