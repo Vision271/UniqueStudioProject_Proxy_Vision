@@ -126,13 +126,13 @@ class ClientConnection:
         self.public_key = self.private_key.public_key()
         self.public_key_bytes = self.public_key.public_bytes_raw()
 
-    def handshake(self, data):
+    def handshake(self, data:bytearray) -> None:
         if self.state != HANDSHAKING_TLS:
             raise ConnectionError("ClientConnection 未处于 HANDSHAKING_TLS 状态却收到 KEY_EXCHANGE 帧")
 
-        self.peer_public_key = X25519PublicKey.from_public_bytes(data)
+        self.peer_public_key = X25519PublicKey.from_public_bytes(bytes(data))
         self.shared_secret = self.private_key.exchange(self.peer_public_key)
-        self.write(KEY_EXCHANGE, 0, self.public_key_bytes)
+        self.write(KEY_EXCHANGE, 0, bytearray(self.public_key_bytes))
 
         self.session_key = HKDF(
             algorithm=hashes.SHA256(),
@@ -376,7 +376,7 @@ class TargetConnection:
 
         self.state = ESTABLISHED
         response = b"\x05\x00\x00\x03" + bytes([len(self.target_host)]) + self.target_host.encode() + struct.pack("!H", self.target_port)
-        self.client_conn.write(SOCKS5_HANDSHAKE, self.id, response)
+        self.client_conn.write(SOCKS5_HANDSHAKE, self.id, bytearray(response))
         return True
 
     def read_clear(self) -> None:
@@ -409,7 +409,7 @@ class TargetConnection:
             if not data:
                 raise ConnectionError("目标连接已关闭")
 
-            self.client_conn.write(TCP_STREAM, self.id, data)
+            self.client_conn.write(TCP_STREAM, self.id, bytearray(data))
             self.last_active_time = time.time()
             self.client_conn.last_active_time = time.time()
 
@@ -501,7 +501,7 @@ class TargetConnection:
                     response = b"\x05\x05\x00\x03" + bytes([len(self.target_host)]) + self.target_host.encode() + struct.pack("!H", self.target_port)
                 else:
                     response = b"\x05\x08\x00\x01\x00\x00\x00\x00\x00\x00"
-                self.client_conn.write(SOCKS5_HANDSHAKE, self.id, response)
+                self.client_conn.write(SOCKS5_HANDSHAKE, self.id, bytearray(response))
             except Exception as e:
                 print(f"Error writing SOCKS5 handshake(socks5 failed): {e}")
 
@@ -563,18 +563,26 @@ def main():
                 conn = client.Connection_by_socket.get(sock)
                 if conn is None:
                     continue
-                if isinstance(conn, TargetConnection) and conn.state == CONNECTING:
+                if isinstance(conn, TargetConnection):
+                    if conn.state == CONNECTING:
+                        try:
+                            conn.check_connect()
+                        except Exception as e:
+                            print(f"Error connecting to {conn.target_host}:{conn.target_port}: {e}")
+                            conn.close()
+                            continue
+                    if conn.state == ESTABLISHED:
+                        try:
+                            conn.send()
+                        except Exception as e:
+                            print(f"Error writing to {conn.target_host}:{conn.target_port}: {e}")
+                            conn.close()
+                else:
                     try:
-                        conn.check_connect()
+                        conn.send()
                     except Exception as e:
-                        print(f"Error connecting to {conn.target_host}:{conn.target_port}: {e}")
+                        print(f"Error writing to {conn.addr}: {e}")
                         conn.close()
-                        continue
-                try:
-                    conn.send()
-                except Exception as e:
-                    print(f"Error writing to {conn.addr if isinstance(conn, ClientConnection) else conn.target_host}:{conn.target_port}: {e}")
-                    conn.close()
 
             for sock in readable:
                 conn = client.Connection_by_socket.get(sock)

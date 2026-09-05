@@ -124,7 +124,7 @@ class VPSConnection:
         try:
             self.sock.connect((self.host, self.port))
         except BlockingIOError as e:
-            if e.errno == errno.EINPROGRESS:
+            if e.errno in (errno.EINPROGRESS, errno.EWOULDBLOCK):
                 pass
             else:
                 raise
@@ -155,7 +155,7 @@ class VPSConnection:
         if self.state != HANDSHAKING_TLS:
             raise ConnectionError("VPSConnection 未处于 HANDSHAKING_TLS 状态却收到 KEY_EXCHANGE 帧")
 
-        self.peer_public_key = X25519PublicKey.from_public_bytes(data)
+        self.peer_public_key = X25519PublicKey.from_public_bytes(bytes(data))
         self.shared_secret = self.private_key.exchange(self.peer_public_key)
 
         self.session_key = HKDF(
@@ -438,7 +438,7 @@ class UserConnection:
         if self.size_to_read < 2 + nmethods:
             return False
         # 忽略 methods
-        self.write(b'\x05\x00')
+        self.write(bytearray(b'\x05\x00'))
         self.read_offset += 2 + nmethods
 
         self.read_clear()
